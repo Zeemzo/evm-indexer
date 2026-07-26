@@ -25,6 +25,7 @@ import (
 	"github.com/zeemzo/evm-indexer/internal/metrics"
 	"github.com/zeemzo/evm-indexer/internal/pubsub"
 	"github.com/zeemzo/evm-indexer/internal/storage"
+	"github.com/zeemzo/evm-indexer/internal/stream"
 )
 
 // Status is a point-in-time snapshot for the /status endpoint.
@@ -49,25 +50,30 @@ type Store interface {
 }
 
 type Indexer struct {
-	cfg     *config.Config
-	client  chain.Client
-	store   Store
-	broker  *pubsub.Broker[events.Event]
-	metrics *metrics.Metrics
-	log     *slog.Logger
+	cfg       *config.Config
+	client    chain.Client
+	store     Store
+	broker    *pubsub.Broker[events.Event]
+	publisher stream.Publisher
+	metrics   *metrics.Metrics
+	log       *slog.Logger
 
 	mu     sync.RWMutex
 	status Status
 }
 
-func New(cfg *config.Config, client chain.Client, store Store, broker *pubsub.Broker[events.Event], m *metrics.Metrics, log *slog.Logger) *Indexer {
+func New(cfg *config.Config, client chain.Client, store Store, broker *pubsub.Broker[events.Event], publisher stream.Publisher, m *metrics.Metrics, log *slog.Logger) *Indexer {
+	if publisher == nil {
+		publisher = stream.Noop{}
+	}
 	return &Indexer{
-		cfg:     cfg,
-		client:  client,
-		store:   store,
-		broker:  broker,
-		metrics: m,
-		log:     log,
+		cfg:       cfg,
+		client:    client,
+		store:     store,
+		broker:    broker,
+		publisher: publisher,
+		metrics:   m,
+		log:       log,
 	}
 }
 
@@ -163,6 +169,7 @@ func (ix *Indexer) cycle(ctx context.Context) (caughtUp bool, err error) {
 	for _, e := range decoded {
 		ix.metrics.EventsIndexed.WithLabelValues(string(e.Type)).Inc()
 		ix.broker.Publish(e)
+		ix.publishToStream(ctx, e)
 	}
 
 	ix.metrics.LastIndexedBlock.Set(float64(to))
@@ -180,6 +187,19 @@ func (ix *Indexer) cycle(ctx context.Context) (caughtUp bool, err error) {
 		"behind", safeHead-to, "took", time.Since(start).Round(time.Millisecond))
 
 	return to == safeHead, nil
+}
+
+// publishToStream best-effort publishes an event to the durable bus.
+// Postgres is the source of truth, so a broker outage must never fail a
+// cycle: we record the outcome and move on. A consumer that missed
+// events can always backfill from the database.
+func (ix *Indexer) publishToStream(ctx context.Context, e events.Event) {
+	if err := ix.publisher.Publish(ctx, e); err != nil {
+		ix.metrics.StreamPublished.WithLabelValues("error").Inc()
+		ix.log.Warn("stream publish failed", "error", err, "block", e.BlockNumber())
+		return
+	}
+	ix.metrics.StreamPublished.WithLabelValues("success").Inc()
 }
 
 // safeHead returns the highest block considered safe to index this

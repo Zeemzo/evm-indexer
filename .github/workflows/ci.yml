@@ -1,0 +1,105 @@
+# CI pipeline: lint, test (with a Postgres service), and a Docker build check.
+# Runs on every push and pull request. The docker job proves the image builds
+# but never pushes — publishing is out of scope for this workflow.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.24"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    # Postgres 16 is the indexer's primary datastore. Most tests are pure unit
+    # tests and won't touch it, but we expose DATABASE_URL so any that do can.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: evm_indexer
+        ports:
+          - 5432:5432
+        # Wait until Postgres is accepting connections before running tests.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/evm_indexer?sslmode=disable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    # Only bother building the image once the code compiles and tests pass.
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          # load: true makes the built image available to the local docker
+          # daemon so we know it's a real, runnable image — not just a cache.
+          load: true
+          tags: ghcr.io/zeemzo/evm-indexer:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,134 @@
+# Default values for evm-indexer.
+# This deployment targets the primary binary, cmd/indexer (the API + indexing
+# server). The other binaries in the repo (cmd/mcp — an MCP stdio server, and
+# cmd/consumer — a Redis Streams consumer) are NOT deployed by this chart.
+
+# -- Number of indexer replicas.
+# IMPORTANT: keep this at 1. The indexer is a single-writer-per-chain process:
+# it advances a per-chain checkpoint in Postgres, and running two replicas
+# against the same chain/DB would double-index and race on that checkpoint.
+# See the Recreate strategy note in templates/deployment.yaml.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/zeemzo/evm-indexer
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Plain (non-secret) environment variables passed to the container.
+# Only the documented indexer env vars are used. Secret values (DATABASE_URL,
+# RPC_URL, REDIS_URL) belong under `secretEnv` / `secrets`, not here.
+env:
+  CHAIN: polygon
+  LOG_LEVEL: info
+  LISTEN_ADDR: ":8080"
+  START_BLOCK: "0"
+  CONFIRMATIONS: "64"
+  USE_FINALIZED: "false"
+  BATCH_SIZE: "500"
+
+# -- Sensitive env vars sourced from an existing Kubernetes Secret.
+# The referenced secret must contain the given keys. If `secrets` (below) is
+# populated, this chart can create that secret for you; otherwise bring your own
+# and point `secretEnv.secretName` at it.
+secretEnv:
+  # Name of the Secret holding sensitive values.
+  secretName: evm-indexer-secrets
+  # Map of container env var -> key within the Secret.
+  keys:
+    DATABASE_URL: DATABASE_URL
+    RPC_URL: RPC_URL
+    # REDIS_URL is optional (only needed for the event stream). Remove this
+    # line if you don't run Redis / the consumer.
+    REDIS_URL: REDIS_URL
+
+# -- Optionally let this chart create the Secret above from inline values.
+# Leave empty to bring your own Secret (recommended for real clusters — use an
+# external secret manager). When set, keys here become stringData in the Secret
+# named by secretEnv.secretName.
+secrets: {}
+#   DATABASE_URL: "postgres://user:pass@host:5432/evm_indexer?sslmode=require"
+#   RPC_URL: "https://polygon.example.com"
+#   REDIS_URL: "redis://host:6379/0"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# -- Prometheus scrape annotations added to the pod. The app exposes /metrics.
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# -- ServiceMonitor for the Prometheus Operator. Enable if you run kube-prometheus.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  # Extra labels so the Prometheus Operator's serviceMonitorSelector picks it up.
+  labels: {}
+
+# -- Horizontal Pod Autoscaler. Disabled by default: the indexer loop is
+# single-writer and must not scale. Only enable if you split the read/API path
+# into its own scalable deployment (not covered by this chart).
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# -- Liveness/readiness probes hit the /health endpoint.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# -- Pod-level security context (image already runs as non-root uid 10001).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Scheduling passthroughs.
+nodeSelector: {}
+tolerations: []
+affinity: {}

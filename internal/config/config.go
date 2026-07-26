@@ -53,6 +53,12 @@ type Config struct {
 	ListenAddr string
 	// LogLevel is one of debug|info|warn|error.
 	LogLevel string
+	// RedisURL, when set, enables publishing decoded events to a Redis
+	// Stream for downstream consumers. Empty disables streaming (the
+	// indexer still serves its own in-process WebSocket fan-out).
+	RedisURL string
+	// StreamName is the Redis Stream key events are appended to.
+	StreamName string
 }
 
 func Load() (*Config, error) {
@@ -84,6 +90,8 @@ func Load() (*Config, error) {
 		RPCTimeout:        getEnvDuration("RPC_TIMEOUT", 30*time.Second),
 		ListenAddr:        getEnv("LISTEN_ADDR", ":8080"),
 		LogLevel:          getEnv("LOG_LEVEL", "info"),
+		RedisURL:          getEnv("REDIS_URL", ""),
+		StreamName:        getEnv("STREAM_NAME", "evm.events"),
 	}
 
 	if cfg.BatchSize == 0 {

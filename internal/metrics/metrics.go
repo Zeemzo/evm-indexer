@@ -16,6 +16,7 @@ type Metrics struct {
 	ReorgsDetected   prometheus.Counter
 	CycleDuration    prometheus.Histogram
 	WSSubscribers    prometheus.Gauge
+	StreamPublished  *prometheus.CounterVec
 }
 
 func New(reg prometheus.Registerer) *Metrics {
@@ -59,5 +60,9 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "indexer_websocket_subscribers",
 			Help: "Currently connected WebSocket subscribers.",
 		}),
+		StreamPublished: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "indexer_stream_published_total",
+			Help: "Events published to the Redis Stream, by outcome.",
+		}, []string{"outcome"}),
 	}
 }

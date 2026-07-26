@@ -135,7 +135,9 @@ func newTestIndexer(t *testing.T, cfg *config.Config, fc *fakeChain, fs *fakeSto
 	t.Cleanup(broker.Close)
 	m := metrics.New(prometheus.NewRegistry())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(cfg, fc, fs, broker, m, log), broker
+	// nil publisher → the indexer substitutes a no-op, so tests don't
+	// need Redis.
+	return New(cfg, fc, fs, broker, nil, m, log), broker
 }
 
 func transferLog(block uint64, index uint) types.Log {

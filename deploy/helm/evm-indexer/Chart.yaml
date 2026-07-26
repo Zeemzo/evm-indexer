@@ -1,0 +1,24 @@
+apiVersion: v2
+name: evm-indexer
+description: >-
+  A multi-chain EVM blockchain indexer. Deploys the indexer server
+  (cmd/indexer) which reads blocks from a JSON-RPC endpoint, writes
+  transfers/swaps to Postgres, and exposes an HTTP API + Prometheus metrics
+  on :8080.
+type: application
+# Chart version — bump on any change to the chart itself.
+version: 0.1.0
+# appVersion tracks the indexer application release this chart targets.
+appVersion: "0.1.0"
+kubeVersion: ">=1.23.0-0"
+keywords:
+  - blockchain
+  - ethereum
+  - polygon
+  - indexer
+  - evm
+home: https://github.com/zeemzo/evm-indexer
+sources:
+  - https://github.com/zeemzo/evm-indexer
+maintainers:
+  - name: zeemzo

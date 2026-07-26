@@ -6,6 +6,8 @@ A production-grade blockchain indexing service for EVM chains, written in Go. Sh
 
 Indexes **ERC-20 `Transfer`** and **Uniswap V2/V3 `Swap`** events, normalizing both swap layouts into a single model. Live-verified against Ethereum and Polygon mainnet.
 
+Beyond the core indexer it ships an **event-driven** Redis Streams bus with a scalable consumer, an **MCP server** exposing the data to AI agents, and **cloud-native** delivery (Helm, Terraform, CI). See [Event streaming](#event-streaming-event-driven), [MCP server](#mcp-server-ai-native), and [Deployment](#deployment).
+
 ## Multi-chain
 
 The pipeline is EVM-generic; only per-network defaults differ, bundled as **presets** (see [chains.go](internal/config/chains.go)). `CHAIN=<name>` seeds `RPC_URL`, `CHAIN_ID`, `POLL_INTERVAL`, `BATCH_SIZE`, and the safe-head strategy; every value stays overridable via its own env var. Run one instance per chain, each with its own database.
@@ -149,20 +151,63 @@ Token amounts are decimal strings end to end (`uint256` doesn't fit in JSON numb
 
 `indexer_last_indexed_block`, `indexer_chain_head_block`, `indexer_blocks_behind`, `indexer_events_indexed_total{type}`, `indexer_rpc_calls_total{method,outcome}`, `indexer_rpc_duration_seconds{method}`, `indexer_reorgs_detected_total`, `indexer_cycle_duration_seconds`, `indexer_websocket_subscribers`
 
+## Event streaming (event-driven)
+
+With `REDIS_URL` set, the indexer also publishes every decoded event to a **Redis Stream** (`XADD`, length-capped), turning it into a durable event bus that downstream services consume independently — no coupling to the indexer. Postgres stays the source of truth; streaming is best-effort (a broker outage records a metric and the cycle proceeds, since any consumer can backfill from the database).
+
+[cmd/consumer](cmd/consumer/main.go) is a worked example: it reads via a **consumer group** (at-least-once delivery, per-message `XACK`, redelivery on crash) and maintains live aggregates. Scale it horizontally — the group load-balances messages across replicas:
+
+```bash
+docker compose up -d                      # postgres + redis + indexer + consumer
+docker compose up -d --scale consumer=3   # three consumers sharing the stream
+```
+
+Verified live: a Polygon backfill published ~14k events; the consumer group drained them with zero pending. Metric: `indexer_stream_published_total{outcome}`.
+
+## MCP server (AI-native)
+
+[cmd/mcp](cmd/mcp/main.go) exposes the indexed data to AI agents over the **Model Context Protocol** (stdio JSON-RPC 2.0, implemented directly in [internal/mcp](internal/mcp/server.go) — no SDK). Point Claude Desktop / Claude Code / Cursor at the binary with `DATABASE_URL` set:
+
+```jsonc
+// claude_desktop_config.json
+{
+  "mcpServers": {
+    "evm-indexer": {
+      "command": "/path/to/bin/mcp",
+      "env": { "CHAIN": "ethereum", "DATABASE_URL": "postgres://…/eth_indexer" }
+    }
+  }
+}
+```
+
+Tools: `list_transfers` (filter by token/from/to), `list_swaps` (by pool/venue), `get_stats`. Handshake negotiates protocol `2024-11-05`; tool failures surface as `isError` results the model can read, distinct from protocol errors.
+
+## Deployment
+
+[deploy/](deploy/README.md) has a **Helm chart** and a **Terraform** module (AWS RDS Postgres + ElastiCache Redis). The key operational constraint: the indexer is a **single writer per chain** (it advances a per-chain Postgres checkpoint), so the chart defaults to `replicaCount: 1` with a `Recreate` rollout strategy and ships the HPA disabled — two concurrent writers on one chain would race the checkpoint. Scale by running more chains, or split the read path (API/consumers) out to scale independently.
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `go vet`, golangci-lint, race-enabled tests against a Postgres service, and a Docker build on every push.
+
 ## Project structure
 
 ```
 cmd/indexer/          Entry point: wiring + graceful shutdown (signal → context → errgroup)
+cmd/mcp/              MCP stdio server — indexed data as AI-agent tools
+cmd/consumer/         Example Redis Stream consumer (consumer group + aggregates)
 internal/
   chain/              ethclient wrapper (retry, timeout, metrics) + topic-based ABI decoder
-  indexer/            Poll cycle: confirmations, reorg detect/rewind, concurrent fetch, ordering
+  indexer/            Poll cycle: safe head, reorg detect/rewind, concurrent fetch, ordering
   storage/            pgx pool, embedded migrations, atomic batch writes, checkpoint, queries
   api/                chi REST handlers + WebSocket streaming
+  mcp/                Model Context Protocol server (stdio JSON-RPC), tools over storage
+  stream/             Redis Streams publisher (durable event bus) + no-op fallback
   pubsub/             Generic non-blocking broker (per-subscriber buffered channels)
   events/             Shared decoded-event model
   config/             Env-based configuration with validation
   metrics/            Prometheus instrumentation
 pkg/retry/            Context-aware exponential backoff with full jitter
+deploy/               Helm chart + Terraform (RDS + ElastiCache) — see deploy/README.md
+.github/workflows/    CI: vet, lint, race tests, docker build
 ```
 
 ## Testing
@@ -178,6 +223,9 @@ Coverage focus:
 - **Indexer cycle** — against an in-memory fake chain + store: confirmation depth respected, checkpoint advances exactly to safe head, reorg detection triggers rewind to the right block and re-indexes, `MAX_BLOCKS_PER_CYCLE` cap, fresh-start semantics, broker publishing
 - **Retry** — backoff, exhaustion preserving the original error for `errors.Is`, context cancellation
 - **PubSub** — fan-out, unsubscribe, slow-consumer drop counting, idempotent close
+- **MCP** — initialize handshake, notification silence, tools/list schema, tool-call filter threading, tool-vs-protocol error separation, malformed-JSON handling
+- **Config** — preset selection, case-insensitivity, env-override precedence, unknown-chain rejection
+- **Stream** — no-op publisher inertness, bad-URL rejection at construction
 
 ## Configuration
 
@@ -193,6 +241,8 @@ All via environment; see [.env.example](.env.example). Notable knobs:
 | `FETCH_CONCURRENCY` | 4 | Parallel RPC fetches; raise with a paid provider |
 | `REORG_REWIND` | 256 | Rewind distance on deep-reorg detection |
 | `START_BLOCK` | 0 | 0 = start at current safe head (no backfill) |
+| `REDIS_URL` | _(empty)_ | Set to enable Redis Streams event publishing; empty disables it |
+| `STREAM_NAME` | `evm.events` | Redis Stream key events are appended to |
 
 Presets set `CHAIN_ID`, `RPC_URL`, `CONFIRMATIONS`, `POLL_INTERVAL`, `BATCH_SIZE`, and `USE_FINALIZED` per network; each is overridable. Full list: [chains.go](internal/config/chains.go).
 

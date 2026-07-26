@@ -1,0 +1,39 @@
+# golangci-lint configuration.
+# Sensible defaults for the evm-indexer: catches real bugs and formatting drift
+# without being pedantic. Tuned for Go 1.24.
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters:
+  # Start from a clean slate and enable an explicit, curated set.
+  disable-all: true
+  enable:
+    - govet        # vet checks (shadowing, printf, etc.)
+    - staticcheck  # broad static analysis / bug detection
+    - errcheck     # unchecked errors
+    - ineffassign  # ineffectual assignments
+    - unused       # unused code
+    - gofmt        # formatting
+    - goimports    # import grouping/formatting
+    - misspell     # common English misspellings in comments/strings
+
+linters-settings:
+  goimports:
+    # Group imports from this module last so local packages are easy to spot.
+    local-prefixes: github.com/zeemzo/evm-indexer
+  govet:
+    enable:
+      - shadow
+  misspell:
+    locale: US
+
+issues:
+  # Don't hide repeated instances of the same issue.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Test files often ignore errors deliberately; relax errcheck there.
+    - path: _test\.go
+      linters:
+        - errcheck

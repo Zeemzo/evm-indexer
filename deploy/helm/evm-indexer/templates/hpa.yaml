@@ -1,0 +1,25 @@
+{{- if .Values.autoscaling.enabled }}
+# NOTE: Autoscaling the indexer is unsafe in general — the indexing loop must
+# remain a single writer per chain (see deployment.yaml). Only enable this if
+# you have separated the scalable read/API path from the writer loop.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "evm-indexer.fullname" . }}
+  labels:
+    {{- include "evm-indexer.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "evm-indexer.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

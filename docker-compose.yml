@@ -15,10 +15,25 @@ services:
       timeout: 3s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   indexer:
     build: .
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       # Preset selector; switch to ethereum/arbitrum/optimism/base and
@@ -28,10 +43,29 @@ services:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/polygon_indexer?sslmode=disable
       RPC_URL: ${RPC_URL:-}
       START_BLOCK: ${START_BLOCK:-0}
+      # Publish decoded events to the Redis Stream for downstream consumers.
+      REDIS_URL: redis://redis:6379/0
       LOG_LEVEL: info
     ports:
       - "8080:8080"
     restart: unless-stopped
 
+  # Example downstream consumer: reads the event stream via a consumer
+  # group and maintains live aggregates. Scale with --scale consumer=N;
+  # the group load-balances messages across replicas.
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      STREAM_NAME: evm.events
+      CONSUMER_GROUP: analytics
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  redisdata:

@@ -26,6 +26,7 @@ import (
 	"github.com/zeemzo/evm-indexer/internal/metrics"
 	"github.com/zeemzo/evm-indexer/internal/pubsub"
 	"github.com/zeemzo/evm-indexer/internal/storage"
+	"github.com/zeemzo/evm-indexer/internal/stream"
 )
 
 func main() {
@@ -74,7 +75,16 @@ func run() error {
 	broker := pubsub.NewBroker[events.Event](256)
 	defer broker.Close()
 
-	ix := indexer.New(cfg, client, store, broker, m, log)
+	// Event streaming is optional: with REDIS_URL set, decoded events are
+	// also published to a Redis Stream for downstream consumers; without
+	// it, the indexer runs on its in-process WebSocket fan-out alone.
+	publisher, err := newPublisher(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	defer publisher.Close()
+
+	ix := indexer.New(cfg, client, store, broker, publisher, m, log)
 	server := api.NewServer(cfg.ListenAddr, store, ix, broker, m, registry, cfg.ChainID, log)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -105,6 +115,21 @@ func run() error {
 	}
 	log.Info("shutdown complete")
 	return nil
+}
+
+// newPublisher builds the event-stream publisher, or a no-op when no
+// REDIS_URL is configured.
+func newPublisher(ctx context.Context, cfg *config.Config, log *slog.Logger) (stream.Publisher, error) {
+	if cfg.RedisURL == "" {
+		log.Info("event streaming disabled (no REDIS_URL)")
+		return stream.Noop{}, nil
+	}
+	pub, err := stream.NewRedisPublisher(ctx, cfg.RedisURL, cfg.StreamName, 1_000_000)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("event streaming enabled", "stream", cfg.StreamName)
+	return pub, nil
 }
 
 // safeHeadMode describes, for the startup log, how the safe head is

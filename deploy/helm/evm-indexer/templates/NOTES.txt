@@ -1,0 +1,37 @@
+{{ .Chart.Name }} has been deployed.
+
+Release:   {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Chain:     {{ .Values.env.CHAIN | default "(unset)" }}
+Replicas:  {{ .Values.replicaCount }} (single-writer — do not scale the indexer loop)
+
+The indexer exposes an HTTP API + Prometheus metrics on port {{ .Values.service.port }}.
+
+1. Check the pod is healthy:
+
+     kubectl --namespace {{ .Release.Namespace }} get pods \
+       -l "app.kubernetes.io/instance={{ .Release.Name }}"
+
+2. Port-forward and hit the API locally:
+
+     kubectl --namespace {{ .Release.Namespace }} port-forward \
+       svc/{{ include "evm-indexer.fullname" . }} 8080:{{ .Values.service.port }}
+
+   Then try:
+     curl http://localhost:8080/health
+     curl http://localhost:8080/status
+     curl http://localhost:8080/metrics
+
+{{- if not .Values.secrets }}
+
+NOTE: This release did NOT create a Secret. Ensure a Secret named
+"{{ .Values.secretEnv.secretName }}" exists with keys:
+{{- range $envName, $secretKey := .Values.secretEnv.keys }}
+  - {{ $secretKey }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.serviceMonitor.enabled }}
+
+Prometheus Operator ServiceMonitor is enabled and will scrape {{ .Values.serviceMonitor.path }}.
+{{- end }}

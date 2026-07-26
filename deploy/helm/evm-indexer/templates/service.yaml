@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "evm-indexer.fullname" . }}
+  labels:
+    {{- include "evm-indexer.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "evm-indexer.selectorLabels" . | nindent 4 }}
