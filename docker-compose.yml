@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: polygon_indexer
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d polygon_indexer"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  indexer:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Preset selector; switch to ethereum/arbitrum/optimism/base and
+      # point DATABASE_URL at a per-chain database. RPC_URL overrides the
+      # preset's public endpoint (recommended for real throughput).
+      CHAIN: ${CHAIN:-polygon}
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/polygon_indexer?sslmode=disable
+      RPC_URL: ${RPC_URL:-}
+      START_BLOCK: ${START_BLOCK:-0}
+      LOG_LEVEL: info
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
