@@ -66,6 +66,23 @@ services:
       CONSUMER_GROUP: analytics
     restart: unless-stopped
 
+  # TypeScript analytics service: consumes the same event stream and
+  # serves portfolios / leaderboards / a live WebSocket feed over HTTP.
+  # Demonstrates the polyglot, event-driven split — Go ingests, TS derives.
+  analytics:
+    build: ./analytics
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      STREAM_NAME: evm.events
+      CONSUMER_GROUP: analytics-api
+      PORT: "8090"
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:

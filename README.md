@@ -6,7 +6,9 @@ A production-grade blockchain indexing service for EVM chains, written in Go. Sh
 
 Indexes **ERC-20 `Transfer`** and **Uniswap V2/V3 `Swap`** events, normalizing both swap layouts into a single model. Live-verified against Ethereum and Polygon mainnet.
 
-Beyond the core indexer it ships an **event-driven** Redis Streams bus with a scalable consumer, an **MCP server** exposing the data to AI agents, and **cloud-native** delivery (Helm, Terraform, CI). See [Event streaming](#event-streaming-event-driven), [MCP server](#mcp-server-ai-native), and [Deployment](#deployment).
+Beyond the core indexer it ships an **event-driven** Redis Streams bus, a **polyglot TypeScript analytics service** consuming that bus, an **MCP server** exposing the data to AI agents, and **cloud-native** delivery (Helm, Terraform, CI). See [Event streaming](#event-streaming-event-driven), [TypeScript analytics](#typescript-analytics-service-polyglot), [MCP server](#mcp-server-ai-native), and [Deployment](#deployment).
+
+This is a **two-language, multi-service platform**: Go ingests and indexes; TypeScript derives analytics off the shared event stream. The services are decoupled — they share only the stream contract.
 
 ## Multi-chain
 
@@ -164,6 +166,19 @@ docker compose up -d --scale consumer=3   # three consumers sharing the stream
 
 Verified live: a Polygon backfill published ~14k events; the consumer group drained them with zero pending. Metric: `indexer_stream_published_total{outcome}`.
 
+## TypeScript analytics service (polyglot)
+
+[analytics/](analytics/README.md) is a separate **TypeScript** service consuming the same stream — the read/analytics tier of the platform. Go ingests; TypeScript derives. They share nothing but the stream contract, so each scales independently.
+
+```
+Go indexer ──XADD──▶ Redis Stream ──consumer group──▶ TS analytics ──▶ REST + WS
+  (ingest)           (durable bus)                     (derive + serve)
+```
+
+It maintains token/pool leaderboards, per-address **net token flows** ("portfolios"), and a live feed, served over REST + WebSocket (`/analytics/tokens`, `/analytics/pools`, `/portfolio/:address`, `/activity/recent`, `/ws`). Token amounts are handled as `BigInt` end to end.
+
+Verified live end to end: with the Go indexer publishing a Polygon backfill, the TS service derived **61k+ events** into leaderboards (BigInt volumes past JS's safe-integer limit, no precision loss) and streamed live events over its WebSocket. Aggregation logic is a pure, I/O-free reducer with unit tests ([analytics/test](analytics/test/store.test.ts)).
+
 ## MCP server (AI-native)
 
 [cmd/mcp](cmd/mcp/main.go) exposes the indexed data to AI agents over the **Model Context Protocol** (stdio JSON-RPC 2.0, implemented directly in [internal/mcp](internal/mcp/server.go) — no SDK). Point Claude Desktop / Claude Code / Cursor at the binary with `DATABASE_URL` set:
@@ -206,8 +221,9 @@ internal/
   config/             Env-based configuration with validation
   metrics/            Prometheus instrumentation
 pkg/retry/            Context-aware exponential backoff with full jitter
+analytics/            TypeScript analytics service (separate package) — see analytics/README.md
 deploy/               Helm chart + Terraform (RDS + ElastiCache) — see deploy/README.md
-.github/workflows/    CI: vet, lint, race tests, docker build
+.github/workflows/    CI: Go (vet, lint, race, docker) + TypeScript (typecheck, test)
 ```
 
 ## Testing
