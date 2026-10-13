@@ -46,13 +46,20 @@ func NewServer(addr string, store *storage.Store, idx *indexer.Indexer, broker *
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
 
-	r.Get("/health", s.handleHealth)
-	r.Get("/status", s.handleStatus)
-	r.Get("/stats", s.handleStats)
-	r.Get("/transfers", s.handleTransfers)
-	r.Get("/swaps", s.handleSwaps)
+	// REST endpoints get a hard request timeout. /ws stays outside the
+	// group: WebSocket sessions are long-lived, and chi's Timeout would
+	// try to write a 504 on the hijacked connection once the handler
+	// outlives the deadline. The WS handler enforces its own liveness
+	// via ping/pong deadlines instead.
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Timeout(30 * time.Second))
+		r.Get("/health", s.handleHealth)
+		r.Get("/status", s.handleStatus)
+		r.Get("/stats", s.handleStats)
+		r.Get("/transfers", s.handleTransfers)
+		r.Get("/swaps", s.handleSwaps)
+	})
 	r.Get("/ws", s.handleWebSocket)
 	r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 

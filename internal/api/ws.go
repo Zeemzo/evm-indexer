@@ -19,6 +19,11 @@ var upgrader = websocket.Upgrader{
 const (
 	writeTimeout = 10 * time.Second
 	pingInterval = 30 * time.Second
+	// pongWait bounds how long a silent peer stays connected. It must
+	// comfortably exceed pingInterval: each pong pushes the read deadline
+	// forward, so a client that misses two pings in a row is dropped
+	// instead of holding its goroutines and broker subscription forever.
+	pongWait = 75 * time.Second
 )
 
 // handleWebSocket streams newly indexed events to the client as JSON.
@@ -45,7 +50,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.log.Info("websocket disconnected", "remote", r.RemoteAddr)
 	}()
 
-	// Reader: discard client messages; returns when the peer closes.
+	// Dead-peer detection: the read deadline only advances when the
+	// client answers our pings, so a half-open connection fails the read
+	// within pongWait instead of leaking the subscription.
+	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
+	// Reader: discard client messages; returns when the peer closes or
+	// the read deadline expires.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
