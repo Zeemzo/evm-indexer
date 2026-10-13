@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -137,7 +138,9 @@ func (s *Store) Transfers(ctx context.Context, f TransferFilter) ([]events.Trans
 		  AND ($4 = 0 OR block_number < $4)
 		ORDER BY block_number DESC, log_index DESC
 		LIMIT $5`
-	rows, err := s.pool.Query(ctx, query, f.Token, f.From, f.To, f.BeforeBlock, clampLimit(f.Limit))
+	rows, err := s.pool.Query(ctx, query,
+		normalizeAddr(f.Token), normalizeAddr(f.From), normalizeAddr(f.To),
+		f.BeforeBlock, clampLimit(f.Limit))
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +175,8 @@ func (s *Store) Swaps(ctx context.Context, f SwapFilter) ([]events.Swap, error) 
 		  AND ($3 = 0 OR block_number < $3)
 		ORDER BY block_number DESC, log_index DESC
 		LIMIT $4`
-	rows, err := s.pool.Query(ctx, query, f.Pool, f.Venue, f.BeforeBlock, clampLimit(f.Limit))
+	rows, err := s.pool.Query(ctx, query,
+		normalizeAddr(f.Pool), f.Venue, f.BeforeBlock, clampLimit(f.Limit))
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +220,18 @@ func (s *Store) Stats(ctx context.Context, chainID uint64) (Stats, error) {
 // Ping verifies database connectivity, used by the health endpoint.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
+}
+
+// normalizeAddr rewrites any capitalization of a hex address to its
+// EIP-55 checksummed form, matching how addresses are stored (via
+// common.Address.Hex()). Without this, a lowercase address copied from an
+// explorer URL would silently match nothing. Empty or non-address input
+// is returned unchanged.
+func normalizeAddr(s string) string {
+	if s == "" || !common.IsHexAddress(s) {
+		return s
+	}
+	return common.HexToAddress(s).Hex()
 }
 
 func clampLimit(limit int) int {
